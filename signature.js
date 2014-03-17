@@ -2,24 +2,23 @@
 	var currentContext;
 	var stroke;
 	
+	/*  Drawing during dragging is done using integers because that can be faster,
+	 *  depending on the implementation of the canvas.
+	 *  A bitwise or with 0 is the fastest way to round a number.
+	 *  Coordinates are stored unrounded for greater precision when resizing the canvas.
+	 */
+	
 	function startLine( canvas, x, y ) {
-		// Using integers may be faster than using floats.
-		// A bitwise or with 0 is the fastest way to round a number.
-		x = x | 0;
-		y = y | 0;
 		currentContext = canvas.getContext( '2d' );
 		currentContext.beginPath();
-		currentContext.moveTo( x, y );
+		currentContext.moveTo( x | 0, y | 0 );
 		stroke = [ [ x, y ] ];
 	}
 
 	function drawLine( x, y ) {
 		if( currentContext ) {
-			// Using integers may be faster than using floats.
-			// A bitwise or with 0 is the fastest way to round a number.
-			x = x | 0;
-			y = y | 0;
-			currentContext.lineTo( x, y );
+			currentContext.lineTo( x | 0, y | 0 );
+			// Draw immediatly.
 			currentContext.stroke();
 			stroke.push( [ x, y ] );
 		}
@@ -28,22 +27,24 @@
 	function endLine( canvas ) {
 		if( currentContext ) {
 			var scale = canvas.resultScale;
+			var i;
 
-			if( stroke.length > 1 ) {
-				// Add stroke to result canvas.
-				var resultContext = canvas.resultCanvas.getContext( '2d' );
-				resultContext.beginPath();
-				resultContext.moveTo( stroke[ 0 ][ 0 ] / scale, stroke[ 0 ][ 1 ] / scale );
-				for( var i = 1; i < stroke.length; i++ ) {
-					resultContext.lineTo( stroke[ i ][ 0 ] / scale, stroke[ i ][ 1 ] / scale );
-				}
-				resultContext.stroke();
+			// Compute strokes to the right scale for the result canvas.
+			for( i = 0; i < stroke.length; i++ ) {
+				stroke[ i ][ 0 ] = stroke[ i ][ 0 ] / scale;
+				stroke[ i ][ 1 ] = stroke[ i ][ 1 ] / scale;
 			}
 
-			// Compute strokes to the right scale and round them.
-			for( var i = 0; i < stroke.length; i++ ) {
-				stroke[ i ][ 0 ] = ( stroke[ i ][ 0 ] / scale ) | 0;
-				stroke[ i ][ 1 ] = ( stroke[ i ][ 1 ] / scale ) | 0;
+			// Add the entire stroke to result canvas.
+			// Do this without rounding, to get a higher precision image.
+			if( stroke.length > 1 ) {
+				var resultContext = canvas.resultCanvas.getContext( '2d' );
+				resultContext.beginPath();
+				resultContext.moveTo( stroke[ 0 ][ 0 ], stroke[ 0 ][ 1 ] );
+				for( i = 1; i < stroke.length; i++ ) {
+					resultContext.lineTo( stroke[ i ][ 0 ], stroke[ i ][ 1 ] );
+				}
+				resultContext.stroke();
 			}
 
 			// Remember stroke and reset variables.
@@ -54,7 +55,7 @@
 	}
 	
 	var methods = {
-		init : function( resultWidth, resultHeight ) {
+		init : function( resultWidth, resultHeight, initialCoords ) {
 			// Set resultWidth and resultHeight to default values if no value is provided.
 			if( resultWidth === undefined ) {
 				resultWidth = 320;
@@ -65,35 +66,47 @@
 			var ratio = resultWidth / resultHeight;
 			
 			this.filter( 'canvas' ).each( function() {
-				p = $( this ).parent();
+				var sig = this;
+				var $sig = $( this );
+				var parent = $sig.parent();
+				$( window ).one( 'resize', function( e ) {
+					if( $.contains( document.documentElement, sig ) ) {
+						// Re-initialize the signature control and redraw the signature.
+						// This will also add this handler again.
+						$sig.signature( 'init', resultWidth, resultHeight, sig.resultCoords );
+					}
+					// else: sognature is no longer in the DOM, doing nothing will remove this handler ('one').
+				} );
+				
 				// Determine maximum canvas size.
-				maxWidth = p.width();
-				maxWidth -= parseInt( $( this ).css( 'border-left-width' ) );
-				maxWidth -= parseInt( $( this ).css( 'border-right-width' ) );
-				maxHeight = p.height();
-				maxHeight -= parseInt( $( this ).css( 'border-top-width' ) );
-				maxHeight -= parseInt( $( this ).css( 'border-bottom-width' ) );
+				maxWidth = parent.width();
+				maxWidth -= parseInt( $sig.css( 'border-left-width' ), 10 );
+				maxWidth -= parseInt( $sig.css( 'border-right-width' ), 10 );
+				maxHeight = parent.height();
+				maxHeight -= parseInt( $sig.css( 'border-top-width' ), 10 );
+				maxHeight -= parseInt( $sig.css( 'border-bottom-width' ), 10 );
 				// Set the size of the canvas to the maximum size within the parent with the given ratio.
 				if( maxWidth > maxHeight * ratio ) {
-					this.width = maxHeight * ratio;
-					this.height = maxHeight;
+					sig.width = maxHeight * ratio;
+					sig.height = maxHeight;
 				}
 				else {
-					this.width = maxWidth;
-					this.height = maxWidth / ratio;
+					sig.width = maxWidth;
+					sig.height = maxWidth / ratio;
 				}
 				
 				// Create and add a hidden result canvas.
 				var resultCanvas = document.createElement( 'canvas' );
 				resultCanvas.width = resultWidth;
 				resultCanvas.height = resultHeight;
-				this.resultCanvas = resultCanvas;
-				this.resultScale = this.width / resultWidth;
-				this.resultCoords = [];
+				sig.resultCanvas = resultCanvas;
+				sig.resultScale = sig.width / resultWidth;
+				sig.resultCoords = [];
+
 				// Set styling for both canvasses. 
-				var ctx = this.getContext( '2d' );
-				ctx.lineWidth = this.resultScale * 2;
-				ctx = this.resultCanvas.getContext( '2d' );
+				var ctx = sig.getContext( '2d' );
+				ctx.lineWidth = sig.resultScale * 2;
+				ctx = sig.resultCanvas.getContext( '2d' );
 				// Change background to white transparent.
 				var bg = ctx.createImageData( resultWidth, resultHeight );
 				for( var i = 0; i < bg.data.length; i += 4 ) {
@@ -107,12 +120,12 @@
 				}
 				ctx.putImageData( bg, 0, 0 );
 				// Put the current date in light gray on the background.
-				ctx.font = 'bold 60px open_sans_semibold, arial';
+				ctx.font = 'bold 60px OpenSans, arial';
 				ctx.textAlign = 'center';
 				ctx.textBaseline = 'middle';
 				ctx.fillStyle = '#ddd';
 				var date = new Date();
-			    var d = date.getDate();
+				var d = date.getDate();
 				var m = date.getMonth() + 1; // Months are zero based
 				var y = date.getFullYear();
 				ctx.fillText( d + '-' + m + '-' + y , 160, 80 );
@@ -120,6 +133,26 @@
 				ctx.fillStyle = 'black';
 				ctx.strokeStyle = 'black';
 				ctx.lineWidth = 2;
+				
+				// If any coordinates are passed, redraw the signature.
+				if( initialCoords !== undefined ) {
+					$.each( initialCoords, function() {
+						var first = true;
+						$.each( this, function() {
+							// Coordinates are scaled to the result canvas.
+							var x = this[ 0 ] * sig.resultScale;
+							var y = this[ 1 ] * sig.resultScale;
+							if( first ) {
+								startLine( sig, x, y );
+								first = false;
+							}
+							else {
+								drawLine( x, y );
+							}
+						} );
+						endLine( sig );
+					} );
+				}
 			} );
 
 			if( this[ 0 ].ontouchmove === undefined || !$has.touch ) {
@@ -196,14 +229,24 @@
 		},
 		
 		coordData : function() {
-			var result;
+			var coords;
+			// Find the first canvas with coordinates.
 			this.filter( 'canvas' ).each( function() {
 				if( this.resultCoords ) {
-					result = this.resultCoords;
+					coords = this.resultCoords;
 					return;
 				}
 			} );
-			if( result ) {
+			// Make a rounded copy of all the coordinates.
+			if( coords ) {
+				var result = [];
+				$.each( coords, function() {
+					var stroke = [];
+					$.each( this, function() {
+						stroke.push( [ this[ 0 ] | 0, this[ 1 ] | 0 ] );
+					} );
+					result.push( stroke );
+				} );
 				return result;
 			}
 			else {
